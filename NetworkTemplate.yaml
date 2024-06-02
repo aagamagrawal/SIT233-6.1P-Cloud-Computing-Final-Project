@@ -1,0 +1,297 @@
+# Parameters section defining the inputs required for the CloudFormation template
+Parameters:
+  EnvName:
+    Description: "Prefix for resource names"
+    Type: String
+    Default: CloudFormation
+
+  VpcIpRange:
+    Description: "CIDR block for the VPC"
+    Type: String
+    Default: 192.168.0.0/16
+
+  PubSubnet1CIDR:
+    Description: "CIDR block for the public subnet in the first Availability Zone"
+    Type: String
+    Default: 192.168.1.0/24
+
+  PubSubnet2CIDR:
+    Description: "CIDR block for the public subnet in the second Availability Zone"
+    Type: String
+    Default: 192.168.2.0/24
+
+  PrivSubnet1CIDR:
+    Description: "CIDR block for the private subnet in the first Availability Zone"
+    Type: String
+    Default: 192.168.3.0/24
+
+  PrivSubnet2CIDR:
+    Description: "CIDR block for the private subnet in the second Availability Zone"
+    Type: String
+    Default: 192.168.4.0/24
+
+# Resources section defining the AWS resources to be created
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcIpRange
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Ref EnvName
+    DeletionPolicy: Retain
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Ref EnvName
+    DeletionPolicy: Retain
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+          DeletionPolicy: Retain
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: !Ref PubSubnet1CIDR
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvName} Public Subnet (AZ1)
+    DeletionPolicy: Retain
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: !Ref PubSubnet2CIDR
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvName} Public Subnet (AZ2)
+    DeletionPolicy: Retain
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: !Ref PrivSubnet1CIDR
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvName} Private Subnet (AZ1)
+    DeletionPolicy: Retain
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: !Ref PrivSubnet2CIDR
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvName} Private Subnet (AZ2)
+    DeletionPolicy: Retain
+
+  NatGateway1EIP:
+    Type: AWS::EC2::EIP
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      Domain: vpc
+    DeletionPolicy: Retain
+
+  NatGateway2EIP:
+    Type: AWS::EC2::EIP
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      Domain: vpc
+    DeletionPolicy: Retain
+
+  NatGateway1:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGateway1EIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+    DeletionPolicy: Retain
+
+  NatGateway2:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGateway2EIP.AllocationId
+      SubnetId: !Ref PublicSubnet2
+    DeletionPolicy: Retain
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvName} Public Routes
+    DeletionPolicy: Retain
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+    DeletionPolicy: Retain
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet1
+    DeletionPolicy: Retain
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet2
+    DeletionPolicy: Retain
+
+  PrivateRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvName} Private Routes (AZ1)
+    DeletionPolicy: Retain
+
+  DefaultPrivateRoute1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway1
+    DeletionPolicy: Retain
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      SubnetId: !Ref PrivateSubnet1
+    DeletionPolicy: Retain
+
+  PrivateRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvName} Private Routes (AZ2)
+    DeletionPolicy: Retain
+
+  DefaultPrivateRoute2:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway2
+    DeletionPolicy: Retain
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      SubnetId: !Ref PrivateSubnet2
+    DeletionPolicy: Retain
+
+  NoIngressSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: "no-ingress-sg"
+      GroupDescription: "Security group with no ingress rules"
+      VpcId: !Ref VPC
+    DeletionPolicy: Retain
+
+# Outputs section defining the outputs of the CloudFormation stack
+Outputs:
+  VPC:
+    Description: "Reference to the created VPC"
+    Value: !Ref VPC
+    Export:
+      Name: task6-CloudFormation-vpc-id
+
+  PublicSubnets:
+    Description: "List of public subnets"
+    Value: !Join [",", [!Ref PublicSubnet1, !Ref PublicSubnet2]]
+    Export:
+      Name: task6-CloudFormation-public-subnets
+
+  PrivateSubnets:
+    Description: "List of private subnets"
+    Value: !Join [",", [!Ref PrivateSubnet1, !Ref PrivateSubnet2]]
+    Export:
+      Name: task6-CloudFormation-private-subnets
+
+  PublicSubnet1:
+    Description: "Reference to the public subnet in the first Availability Zone"
+    Value: !Ref PublicSubnet1
+    Export:
+      Name: task6-CloudFormation-public-subnet-a-id
+
+  PublicSubnet2:
+    Description: "Reference to the public subnet in the second Availability Zone"
+    Value: !Ref PublicSubnet2
+    Export:
+      Name: task6-CloudFormation-public-subnet-b-id
+
+  PrivateSubnet1:
+    Description: "Reference to the private subnet in the first Availability Zone"
+    Value: !Ref PrivateSubnet1
+    Export:
+      Name: task6-CloudFormation-private-subnet-a-id
+
+  PrivateSubnet2:
+    Description: "Reference to the private subnet in the second Availability Zone"
+    Value: !Ref PrivateSubnet2
+    Export:
+      Name: task6-CloudFormation-private-subnet-b-id
+
+  PrivateRouteTable2:
+    Description: "Reference to the private route table for the PrivateSubnet2"
+    Value: !Ref PrivateRouteTable2
+
+  PrivateRouteTable1:
+    Description: "Reference to the private route table for the PrivateSubnet1"
+    Value: !Ref PrivateRouteTable1
+
+  PublicRouteTable:
+    Description: "Reference to the public route table for the PublicSubnet1 and PublicSubnet2"
+    Value: !Ref PublicRouteTable
+
+  NatGateway1:
+    Description: "Reference to the NAT Gateway created in PublicSubnet1"
+    Value: !Ref NatGateway1
+
+  NatGateway2:
+    Description: "Reference to the NAT Gateway created in PublicSubnet2"
+    Value: !Ref NatGateway2
+
+  InternetGateway:
+    Description: "Reference to the Internet Gateway created in the VPC"
+    Value: !Ref InternetGateway
+
+  NoIngressSecurityGroup:
+    Description: "Security group with no ingress rules"
+    Value: !Ref NoIngressSecurityGroup
+    Export:
+      Name: CloudFormation-no-ingress-sg-id
