@@ -1,0 +1,194 @@
+# Parameters defining the required inputs for the CloudFormation template
+Parameters:
+  EnvPrefix:
+    Description: "Prefix for resource names"
+    Type: String
+    Default: CFNEnv
+
+  ImageId:
+    Description: "Required: AMI ID for launching EC2 instances"
+    Type: AWS::EC2::Image::Id
+    ConstraintDescription: "Must be a valid AMI ID."
+
+  InstanceClass:
+    Description: "Type of EC2 instance for AutoScalingGroup"
+    Type: String
+    Default: t2.micro
+
+# Resources section defining the AWS resources to be created
+Resources:
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${EnvPrefix}-alb-sg
+      VpcId: !ImportValue cfn-vpc-id
+      GroupDescription: "Security group for ALB"
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          FromPort: 80
+          IpProtocol: tcp
+          ToPort: 80
+
+  WebServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${EnvPrefix}-web-sg
+      VpcId: !ImportValue cfn-vpc-id
+      GroupDescription: "Allow HTTP access from ALB to web servers"
+      SecurityGroupIngress:
+        - SourceSecurityGroupId: !Ref ALBSecurityGroup
+          FromPort: 80
+          IpProtocol: tcp
+          ToPort: 80
+
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${EnvPrefix}-rds-sg
+      VpcId: !ImportValue cfn-vpc-id
+      GroupDescription: "Allow database access from web servers"
+      SecurityGroupIngress:
+        - SourceSecurityGroupId: !Ref WebServerSecurityGroup
+          FromPort: 3306
+          IpProtocol: tcp
+          ToPort: 3306
+
+  EC2LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub ${EnvPrefix}-lt
+      LaunchTemplateData:
+        IamInstanceProfile:
+          Arn: !Sub arn:aws:iam::${AWS::AccountId}:instance-profile/InstanceProfile
+        ImageId: !Ref ImageId
+        InstanceType: !Ref InstanceClass
+        SecurityGroupIds:
+          - !Ref WebServerSecurityGroup
+
+  LoadBalancerTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${EnvPrefix}-tg
+      HealthCheckIntervalSeconds: 30
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 15
+      HealthyThresholdCount: 5
+      Matcher:
+        HttpCode: 200
+      Port: 80
+      Protocol: HTTP
+      VpcId: !ImportValue cfn-vpc-id
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvPrefix}-tg
+        - Key: Port
+          Value: 80
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref LoadBalancerTargetGroup
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub ${EnvPrefix}-alb
+      Scheme: internet-facing
+      Subnets:
+        - !ImportValue cfn-public-subnet-a-id
+        - !ImportValue cfn-public-subnet-b-id
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: !Sub ${EnvPrefix}-asg
+      LaunchTemplate:
+        LaunchTemplateId: !Ref EC2LaunchTemplate
+        Version: !GetAtt EC2LaunchTemplate.LatestVersionNumber
+      MaxSize: 3
+      MinSize: 1
+      DesiredCapacity: 1
+      VPCZoneIdentifier:
+        - !ImportValue private-subnet-1
+        - !ImportValue private-subnet-2
+      TargetGroupARNs:
+        - !Ref LoadBalancerTargetGroup
+
+  ASGScaleOutPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      PolicyType: StepScaling
+      AdjustmentType: ChangeInCapacity
+      StepAdjustments:
+        - MetricIntervalLowerBound: 0
+          ScalingAdjustment: 1
+
+  HighCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      EvaluationPeriods: 5
+      Statistic: Average
+      Threshold: 70
+      AlarmDescription: "Scale out if CPU > 70% for 5 minutes"
+      Period: 60
+      AlarmActions:
+        - !Ref ASGScaleOutPolicy
+      Namespace: AWS/EC2
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref AutoScalingGroup
+      ComparisonOperator: GreaterThanThreshold
+      MetricName: CPUUtilization
+
+  ASGScaleInPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      PolicyType: StepScaling
+      AdjustmentType: ChangeInCapacity
+      StepAdjustments:
+        - MetricIntervalLowerBound: 0
+          ScalingAdjustment: -1
+
+  LowCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      EvaluationPeriods: 5
+      Statistic: Average
+      Threshold: 25
+      AlarmDescription: "Scale in if CPU < 25% for 5 minutes"
+      Period: 60
+      AlarmActions:
+        - !Ref ASGScaleInPolicy
+      Namespace: AWS/EC2
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref AutoScalingGroup
+      ComparisonOperator: LessThanThreshold
+      MetricName: CPUUtilization
+
+# Outputs section defining the outputs of the CloudFormation stack
+Outputs:
+  AutoScalingGroupId:
+    Description: "Reference to the created AutoScalingGroup"
+    Value: !Ref AutoScalingGroup
+
+  LaunchTemplateId:
+    Description: "Reference to the created Launch Template"
+    Value: !Ref EC2LaunchTemplate
+
+  LoadBalancerId:
+    Description: "Reference to the created Application Load Balancer"
+    Value: !Ref ApplicationLoadBalancer
+
+  RDSSecurityGroupId:
+    Description: "Reference to the created RDS security group"
+    Value: !Ref RDSSecurityGroup
